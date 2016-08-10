@@ -16,12 +16,17 @@ public class MultiQueryIndexSourceOperator implements IOperator {
     
     private int queryCursor = -1;
     
+    private int cursor = CLOSED;
+    
     public MultiQueryIndexSourceOperator(MultiQueryPredicate multiQueryPredicate) {
         this.predicate = multiQueryPredicate;
     }
 
     @Override
     public void open() throws DataFlowException {
+        if (cursor != CLOSED) {
+            return;
+        }      
         if (predicate.getQueryList().isEmpty()) {
             throw new DataFlowException("Query list is empty.");
         }
@@ -31,6 +36,8 @@ public class MultiQueryIndexSourceOperator implements IOperator {
             dataReader.open();
             
             outputSchema = dataReader.getOutputSchema();
+            
+            cursor = OPENED;
         } catch (Exception e) {
             throw new DataFlowException(e.getMessage(), e);
         }
@@ -67,10 +74,15 @@ public class MultiQueryIndexSourceOperator implements IOperator {
     
     @Override
     public void close() throws Exception {
+        if (cursor != OPENED) {
+            return;
+        }
         try {
             if (dataReader != null) {
                 dataReader.close();
             }
+            cursor = CLOSED;
+            queryCursor = -1;
         } catch (Exception e) {
             throw new DataFlowException(e.getMessage(), e);
         }
@@ -84,6 +96,7 @@ public class MultiQueryIndexSourceOperator implements IOperator {
                 predicate.getDataStore(),
                 predicate.getAttributeList(),
                 predicate.getLuceneAnalyzer());
+        dataReaderPredicate.setIsSpanInformationAdded(true);
         DataReader dataReader = new DataReader(dataReaderPredicate);
         return dataReader;
     }  

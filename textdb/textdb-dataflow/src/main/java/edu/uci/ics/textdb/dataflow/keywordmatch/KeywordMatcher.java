@@ -340,7 +340,7 @@ public class KeywordMatcher implements IOperator {
 		return inputOperator;
 	}
 
-	public void setInputOperator(ISourceOperator inputOperator) {
+	public void setInputOperator(IOperator inputOperator) {
 		this.inputOperator = inputOperator;
 	}
 

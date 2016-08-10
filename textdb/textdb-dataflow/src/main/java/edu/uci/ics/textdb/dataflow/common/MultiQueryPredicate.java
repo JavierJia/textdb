@@ -24,10 +24,10 @@ public class MultiQueryPredicate {
     
     public MultiQueryPredicate(List<Query> queryList, List<String> queryStringList, IDataStore dataStore, 
             List<Attribute> attributeList, Analyzer luceneAnalyzer) throws DataFlowException {
-        if (this.queryList.size() != this.queryStringList.size()) {
+        if (queryList.size() != queryStringList.size()) {
             throw new DataFlowException("queryList and queryStringList have different sizes");
         }
-        if (this.queryList.isEmpty() || this.queryStringList.isEmpty()) {
+        if (queryList.isEmpty() || queryStringList.isEmpty()) {
             throw new DataFlowException("queryList or queryStringList is empty");
         }
         

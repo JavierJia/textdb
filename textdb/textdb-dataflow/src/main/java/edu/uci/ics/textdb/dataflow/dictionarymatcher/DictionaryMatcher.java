@@ -13,6 +13,7 @@ import edu.uci.ics.textdb.api.common.ITuple;
 import edu.uci.ics.textdb.api.common.Schema;
 import edu.uci.ics.textdb.api.dataflow.IOperator;
 import edu.uci.ics.textdb.common.constants.DataConstants;
+import edu.uci.ics.textdb.common.constants.SchemaConstants;
 import edu.uci.ics.textdb.common.constants.DataConstants.KeywordMatchingType;
 import edu.uci.ics.textdb.common.exception.DataFlowException;
 import edu.uci.ics.textdb.common.exception.ErrorMessages;
@@ -22,6 +23,7 @@ import edu.uci.ics.textdb.dataflow.common.DictionaryPredicate;
 import edu.uci.ics.textdb.dataflow.common.KeywordPredicate;
 import edu.uci.ics.textdb.dataflow.keywordmatch.KeywordMatcher;
 import edu.uci.ics.textdb.dataflow.source.IndexBasedSourceOperator;
+import edu.uci.ics.textdb.dataflow.source.MultiQueryIndexSourceOperator;
 import edu.uci.ics.textdb.storage.DataReaderPredicate;
 
 /**
@@ -32,10 +34,11 @@ import edu.uci.ics.textdb.storage.DataReaderPredicate;
 public class DictionaryMatcher implements IOperator {
 
     private IOperator inputOperator;
+    private KeywordMatcher keywordMatcher;
 
-	private Schema spanSchema;
+    private Schema inputSchema;
+	private Schema outputSchema;
     
-    private ITuple currentTuple;
     private String currentDictionaryEntry;
 
     private final DictionaryPredicate predicate;
@@ -55,10 +58,31 @@ public class DictionaryMatcher implements IOperator {
      */
     @Override
     public void open() throws DataFlowException {
-        try {
-        
+        if (this.inputOperator == null) {
+            throw new DataFlowException(ErrorMessages.INPUT_OPERATOR_NOT_SPECIFIED);
+        }
+        try {            
+            inputOperator.open();
+            
+            inputSchema = inputOperator.getOutputSchema();
+            if (inputSchema.containsField(SchemaConstants.SPAN_LIST)) {
+                outputSchema = inputSchema;
+            } else {
+                outputSchema = Utils.createSpanSchema(inputSchema);
+            }
 
             
+            this.keywordMatcher = generateNextKeywordMatcher();
+            if (this.keywordMatcher == null) {
+                throw new DataFlowException("Dictionary is empty");
+            }
+            keywordMatcher.open();
+
+            
+            if (inputOperator instanceof MultiQueryIndexSourceOperator) {
+                // TODO: handles differently if inputOperator comes directly from index
+            }
+
         } catch (Exception e) {
             throw new DataFlowException(e.getMessage(), e);
         }
@@ -94,10 +118,47 @@ public class DictionaryMatcher implements IOperator {
      */
     @Override
     public ITuple getNextTuple() throws Exception {
-        return null;
+        try {
+            ITuple result = null;
+            while (result == null) {
+                if ((result = keywordMatcher.getNextTuple()) != null) {
+                    break;
+                }
+                
+                // If all results from current keywordMatcher are consumed, 
+                // advance to next dictionary entry, and
+                // generate a new KeywordMatcher
+                keywordMatcher.close();
+                keywordMatcher = generateNextKeywordMatcher();
+                if (this.keywordMatcher == null) {
+                    break;
+                }
+                keywordMatcher.open();
+            }
+            
+            return result;
+        } catch (Exception e) {
+            throw new DataFlowException(e.getMessage(), e);
+        }
+        
     }
     
-
+    private KeywordMatcher generateNextKeywordMatcher() throws DataFlowException {
+        if ((this.currentDictionaryEntry = predicate.getNextDictionaryEntry()) == null) {
+            return null;
+        }
+                
+        KeywordPredicate keywordPredicate = new KeywordPredicate(
+                currentDictionaryEntry,
+                predicate.getAttributeList(), predicate.getAnalyzer(),
+                predicate.getSourceOperatorType());
+        
+        KeywordMatcher keywordMatcher = new KeywordMatcher(keywordPredicate);
+        keywordMatcher.setInputOperator(inputOperator);
+        
+        return keywordMatcher;
+    }
+    
     /**
      * @about Closes the operator
      */
@@ -112,9 +173,7 @@ public class DictionaryMatcher implements IOperator {
             throw new DataFlowException(e.getMessage(), e);
         }
     }
-    
-    
-    
+
     
     public IOperator getInputOperator() {
 		return inputOperator;
@@ -124,9 +183,8 @@ public class DictionaryMatcher implements IOperator {
 		this.inputOperator = inputOperator;
 	}
 
-
     @Override
     public Schema getOutputSchema() {
-        return spanSchema;
+        return outputSchema;
     }
 }

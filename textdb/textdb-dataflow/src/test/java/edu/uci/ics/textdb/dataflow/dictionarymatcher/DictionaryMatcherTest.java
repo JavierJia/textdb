@@ -35,6 +35,7 @@ import edu.uci.ics.textdb.common.field.TextField;
 import edu.uci.ics.textdb.common.utils.Utils;
 import edu.uci.ics.textdb.dataflow.common.Dictionary;
 import edu.uci.ics.textdb.dataflow.common.DictionaryPredicate;
+import edu.uci.ics.textdb.dataflow.source.MultiQueryIndexSourceOperator;
 import edu.uci.ics.textdb.dataflow.utils.TestUtils;
 import edu.uci.ics.textdb.storage.DataStore;
 import edu.uci.ics.textdb.storage.writer.DataWriter;
@@ -70,8 +71,10 @@ public class DictionaryMatcherTest {
     public List<ITuple> getQueryResults(IDictionary dictionary, KeywordMatchingType srcOpType,
             List<Attribute> attributes) throws Exception {
 
-    	IPredicate dictionaryPredicate = new DictionaryPredicate(dictionary, dataStore, attributes, luceneAnalyzer, srcOpType);
+    	DictionaryPredicate dictionaryPredicate = new DictionaryPredicate(dictionary, attributes, luceneAnalyzer, srcOpType);
+    	MultiQueryIndexSourceOperator indexInputOperator = new MultiQueryIndexSourceOperator(dictionaryPredicate.getMultiQueryPredicate(dataStore));
     	dictionaryMatcher = new DictionaryMatcher(dictionaryPredicate);
+    	dictionaryMatcher.setInputOperator(indexInputOperator);
     	dictionaryMatcher.open();
         ITuple nextTuple = null;
         List<ITuple> results = new ArrayList<ITuple>();
@@ -176,6 +179,9 @@ public class DictionaryMatcherTest {
                 TestConstants.DESCRIPTION_ATTR);
 
         List<ITuple> returnedResults = getQueryResults(dictionary, KeywordMatchingType.CONJUNCTION_INDEXBASED, attributes);
+        
+        System.out.println(Utils.getTupleListString(returnedResults));
+        
         boolean contains = TestUtils.containsAllResults(expectedResults, returnedResults);
         Assert.assertTrue(contains);
     }
