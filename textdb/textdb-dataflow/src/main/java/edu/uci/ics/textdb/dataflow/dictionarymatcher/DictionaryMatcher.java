@@ -47,7 +47,6 @@ public class DictionaryMatcher implements IOperator {
      */
     public DictionaryMatcher(IPredicate predicate) {
         this.predicate = (DictionaryPredicate) predicate;
-        this.spanSchema = Utils.createSpanSchema(this.predicate.getDataStore().getSchema());
     }
     
 
@@ -57,38 +56,7 @@ public class DictionaryMatcher implements IOperator {
     @Override
     public void open() throws DataFlowException {
         try {
-        	currentDictionaryEntry = predicate.getNextDictionaryEntry();
-            if (currentDictionaryEntry == null) {
-            	throw new DataFlowException("Dictionary is empty");
-            }
-            
-            if (predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.SUBSTRING_SCANBASED) {
-                inputOperator = predicate.getScanSourceOperator();
-                inputOperator.open();
-            } else {
-                KeywordPredicate keywordPredicate = null;
-                if (predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.PHRASE_INDEXBASED) {
-                    keywordPredicate = new KeywordPredicate(
-                            currentDictionaryEntry,
-                            predicate.getAttributeList(), predicate.getAnalyzer(),
-                            KeywordMatchingType.PHRASE_INDEXBASED);
-                    
-
-                } else if (predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.CONJUNCTION_INDEXBASED) {
-                    keywordPredicate = new KeywordPredicate(
-                            currentDictionaryEntry,
-                            predicate.getAttributeList(), predicate.getAnalyzer(),
-                            KeywordMatchingType.CONJUNCTION_INDEXBASED);
-                }
-                
-                IndexBasedSourceOperator indexInputOperator = new IndexBasedSourceOperator(keywordPredicate.generateDataReaderPredicate(predicate.getDataStore()));
-                KeywordMatcher keywordMatcher = new KeywordMatcher(keywordPredicate);
-                keywordMatcher.setInputOperator(indexInputOperator);
-                inputOperator = keywordMatcher;
-                
-                inputOperator.open();
-            }
-            
+        
 
             
         } catch (Exception e) {
@@ -126,122 +94,9 @@ public class DictionaryMatcher implements IOperator {
      */
     @Override
     public ITuple getNextTuple() throws Exception {
-    	if (predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.PHRASE_INDEXBASED
-    	||  predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.CONJUNCTION_INDEXBASED) {
-    		// For each dictionary entry, 
-    		// get all result from KeywordMatcher.
-    		
-    		while (true) {
-    			// If there's result from current keywordMatcher, return it.
-    			if ((currentTuple = inputOperator.getNextTuple()) != null) {
-    				return currentTuple;
-    			}
-    			// If all results from current keywordMatcher are consumed, 
-    			// advance to next dictionary entry, and
-    			// return null if reach the end of dictionary.
-    			if ((currentDictionaryEntry = predicate.getNextDictionaryEntry()) == null) {
-    				return null;
-    			}
-    			
-    			// Construct a new KeywordMatcher with the new dictionary entry.
-    			KeywordMatchingType keywordMatchingType;
-    			if (predicate.getSourceOperatorType() == DataConstants.KeywordMatchingType.PHRASE_INDEXBASED) {
-    				keywordMatchingType = KeywordMatchingType.PHRASE_INDEXBASED;
-    			} else {
-    				keywordMatchingType = KeywordMatchingType.CONJUNCTION_INDEXBASED;
-    			}
-    			
-                inputOperator.close();
-    			
-				KeywordPredicate keywordPredicate = new KeywordPredicate(
-						currentDictionaryEntry,
-						predicate.getAttributeList(), predicate.getAnalyzer(),
-						keywordMatchingType);
-    			
-                IndexBasedSourceOperator indexInputOperator = new IndexBasedSourceOperator(keywordPredicate.generateDataReaderPredicate(predicate.getDataStore()));
-    	        KeywordMatcher keywordMatcher = new KeywordMatcher(keywordPredicate);
-    	        keywordMatcher.setInputOperator(indexInputOperator);
-                inputOperator = keywordMatcher;
-                
-    			inputOperator.open();
-    		}
-        }
-    	else {
-    		if (currentTuple == null) {
-    			if ((currentTuple = inputOperator.getNextTuple()) == null) {
-    				return null;
-    			}
-    		}
-    		
-    		ITuple result = currentTuple;
-    		while (currentTuple != null) {
-    			result = matchTuple(currentDictionaryEntry, currentTuple);
-    			if (result != null) {
-    				advanceCursor();
-
-    				return result;
-    			}
-    			advanceCursor();
-    		}
-
-    		return null;
-    	}
+        return null;
     }
     
-    /*
-     * Advance the cursor of dictionary. if reach the end of the dictionary,
-     * advance the cursor of tuples and reset dictionary
-     */
-    private void advanceCursor() throws Exception {
-    	if ((currentDictionaryEntry = predicate.getNextDictionaryEntry()) != null) {
-    		return;
-    	}
-    	predicate.resetDictCursor();
-    	currentDictionaryEntry = predicate.getNextDictionaryEntry();
-    	currentTuple = inputOperator.getNextTuple();
-    }
-    
-    /*
-     * Match the key against the dataTuple.
-     * if there's no match, returns the original dataTuple object,
-     * if there's a match, return a new dataTuple with span list added
-     */
-    private ITuple matchTuple(String key, ITuple dataTuple) {
-    	
-    	List<Attribute> attributeList = predicate.getAttributeList();
-    	List<Span> spanList = new ArrayList<>();
-    	
-    	for (Attribute attr : attributeList) {
-    		String fieldName = attr.getFieldName();
-    		String fieldValue = dataTuple.getField(fieldName).getValue().toString();
-    		
-    		// if attribute type is not TEXT, then key needs to match the fieldValue exactly
-    		if (attr.getFieldType() != FieldType.TEXT) {
-    			if (fieldValue.equals(key)) {
-    				spanList.add(new Span(fieldName, 0, fieldValue.length(), key, fieldValue));
-    			}
-    		}
-    		// if attribute type is TEXT, then key can match a substring of fieldValue
-    		else {
-    			String regex =  key.toLowerCase();
-    			Pattern pattern = Pattern.compile(regex, Pattern.CASE_INSENSITIVE);
-    			Matcher matcher = pattern.matcher(fieldValue.toLowerCase());
-    			while (matcher.find()) {
-    				int start = matcher.start();
-    				int end = matcher.end();
-
-    				spanList.add(new Span(fieldName, start, end, key, fieldValue.substring(start, end)));
-    			}
-    		}
-    	}
-    	
-    	if (spanList.size() == 0) {
-    		return null;
-    	} else {
-    		return Utils.getSpanTuple(dataTuple.getFields(), spanList, this.spanSchema);
-    	}
-    }
-
 
     /**
      * @about Closes the operator
@@ -257,6 +112,8 @@ public class DictionaryMatcher implements IOperator {
             throw new DataFlowException(e.getMessage(), e);
         }
     }
+    
+    
     
     
     public IOperator getInputOperator() {

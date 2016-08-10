@@ -1,5 +1,6 @@
 package edu.uci.ics.textdb.dataflow.common;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.lucene.analysis.Analyzer;
@@ -25,7 +26,6 @@ public class DictionaryPredicate implements IPredicate {
     private IDictionary dictionary;
     private Analyzer luceneAnalyzer;
     private List<Attribute> attributeList;
-    private IDataStore dataStore;
     private KeywordMatchingType srcOpType;
     
     /*
@@ -34,14 +34,13 @@ public class DictionaryPredicate implements IPredicate {
     New and York; if searched in String field we search for Exact string.
      */
 
-    public DictionaryPredicate(IDictionary dictionary, IDataStore dataStore, List<Attribute> attributeList,
+    public DictionaryPredicate(IDictionary dictionary, List<Attribute> attributeList,
     		Analyzer luceneAnalyzer, KeywordMatchingType srcOpType) {
 
         this.dictionary = dictionary;
         this.luceneAnalyzer = luceneAnalyzer;
         this.attributeList = attributeList;
         this.srcOpType = srcOpType;
-        this.dataStore = dataStore;
     }
 
     public KeywordMatchingType getSourceOperatorType() {
@@ -63,10 +62,6 @@ public class DictionaryPredicate implements IPredicate {
         return attributeList;
     }
 
-    public IDataStore getDataStore() {
-        return dataStore;
-    }
-
     public Analyzer getAnalyzer() {
         return luceneAnalyzer;
     }
@@ -85,4 +80,22 @@ public class DictionaryPredicate implements IPredicate {
         IOperator operator = new ScanBasedSourceOperator(dataReader);
         return operator;
     }
+    
+    public MultiQueryPredicate getMultiQueryPredicate(IDataStore dataStore) throws DataFlowException {
+        ArrayList<Query> queryList = new ArrayList<>();
+        ArrayList<String> queryStringList = new ArrayList<>();
+        
+        String dictEntry = null;
+        while ((dictEntry = dictionary.getNextValue()) != null) {
+            KeywordPredicate keywordPredicate = new KeywordPredicate(dictEntry, attributeList, luceneAnalyzer, srcOpType);
+            queryList.add(keywordPredicate.getQueryObject());
+            queryStringList.add(keywordPredicate.getQuery());
+        }
+        dictionary.resetCursor();        
+        
+        MultiQueryPredicate predicate = new MultiQueryPredicate(queryList, queryStringList, dataStore, attributeList, luceneAnalyzer);
+        
+        return predicate;
+    }
+
 }
