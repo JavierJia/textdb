@@ -9,6 +9,8 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.Query;
 
+import edu.uci.ics.textdb.api.common.Attribute;
+import edu.uci.ics.textdb.api.common.FieldType;
 import edu.uci.ics.textdb.api.common.IField;
 import edu.uci.ics.textdb.api.common.IPredicate;
 import edu.uci.ics.textdb.api.common.ITuple;
@@ -16,7 +18,9 @@ import edu.uci.ics.textdb.api.common.Schema;
 import edu.uci.ics.textdb.api.dataflow.IOperator;
 import edu.uci.ics.textdb.api.dataflow.ISourceOperator;
 import edu.uci.ics.textdb.common.constants.DataConstants;
+import edu.uci.ics.textdb.common.constants.SchemaConstants;
 import edu.uci.ics.textdb.common.exception.DataFlowException;
+import edu.uci.ics.textdb.common.exception.ErrorMessages;
 import edu.uci.ics.textdb.common.field.DataTuple;
 import edu.uci.ics.textdb.common.field.ListField;
 import edu.uci.ics.textdb.common.field.Span;
@@ -33,18 +37,16 @@ public class RegexMatcher implements IOperator {
     private RegexPredicate regexPredicate;
     
     private String regex;
-    private List<String> fieldNameList;
+    private List<Attribute> attributeList;
     
-    private Schema sourceTupleSchema;
-    private Schema spanSchema;
+    private Schema inputSchema;
+    private Schema outputSchema;
     
-    private String luceneQueryStr;
-    private Query luceneQuery;
+	private IOperator inputOperator;
     
-	private Analyzer luceneAnalyzer;
-	private ISourceOperator sourceOperator;
-    
-    private List<Span> spanList;
+	private int limit;
+	private int cursor;
+	private int offset;
         
     // two available regex engines, RegexMatcher will try RE2J first 
 	private enum RegexEngine {
@@ -56,19 +58,14 @@ public class RegexMatcher implements IOperator {
 	private java.util.regex.Pattern javaPattern;
 	
 	
-    public RegexMatcher(IPredicate predicate) throws DataFlowException{
-    	this (predicate, true);
-    }
-
-    public RegexMatcher(IPredicate predicate, boolean useTranslator) throws DataFlowException{
-    	this.regexPredicate = (RegexPredicate) predicate;
+    public RegexMatcher(RegexPredicate predicate) throws DataFlowException{
+    	this.cursor = -1;
+    	this.offset = 0;
+    	this.limit = Integer.MAX_VALUE;
+    	this.regexPredicate = predicate;
     	this.regex = regexPredicate.getRegex();
-    	this.fieldNameList = regexPredicate.getFieldNameList();
-    	this.luceneAnalyzer = regexPredicate.getLuceneAnalyzer();
-    	
-		this.sourceTupleSchema = regexPredicate.getDataStore().getSchema();
-		this.spanSchema = Utils.createSpanSchema(this.sourceTupleSchema);
-		
+    	this.attributeList = regexPredicate.getAttributeList();  	
+    			
 		// try Java Regex first
 		try {
 			this.javaPattern = java.util.regex.Pattern.compile(regex);
@@ -80,72 +77,63 @@ public class RegexMatcher implements IOperator {
 				this.regexEngine = RegexEngine.RE2J;
 			// if RE2J also fails, throw exception
 	    	} catch (com.google.re2j.PatternSyntaxException re2jException) {
-				throw new DataFlowException(javaException.getMessage());
+				throw new DataFlowException(javaException.getMessage(), javaException);
 	    	}
-		}
-		
-		this.luceneQueryStr =  DataConstants.SCAN_QUERY;
-		// try to translate if useTranslator is true 
-		if (useTranslator) {
-			try {
-				this.luceneQueryStr = RegexToGramQueryTranslator.translate(regex).getLuceneQueryString();
-			} catch (com.google.re2j.PatternSyntaxException e) {
-			}
-		}
-    	
-    	try {
-    		this.luceneQuery = generateLuceneQuery(fieldNameList, luceneQueryStr);
-    	} catch (ParseException e) {
-    		throw new DataFlowException(e.getMessage());
-    	}
-    	    	
-		DataReaderPredicate dataReaderPredicate = new DataReaderPredicate(this.luceneQuery,
-				this.luceneQueryStr, regexPredicate.getDataStore(),
-				regexPredicate.getAttributeList(), luceneAnalyzer);
-		this.sourceOperator = new IndexBasedSourceOperator(dataReaderPredicate);
-		
+		}		
     }
     
     
-	private Query generateLuceneQuery(List<String> fields, String queryStr) throws ParseException {
-		String[] fieldsArray = new String[fields.size()];
-		QueryParser parser = new MultiFieldQueryParser(fields.toArray(fieldsArray), luceneAnalyzer);
-		return parser.parse(queryStr);
-	}
+    @Override
+    public void open() throws DataFlowException {
+        if (this.inputOperator == null) {
+            throw new DataFlowException(ErrorMessages.INPUT_OPERATOR_NOT_SPECIFIED);
+        }
+
+        try {
+            inputOperator.open();
+            
+            this.inputSchema = inputOperator.getOutputSchema();
+            if (! this.inputSchema.containsField(SchemaConstants.SPAN_LIST)) {
+                outputSchema = Utils.createSpanSchema(inputSchema);
+            } else {
+                outputSchema = inputSchema;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new DataFlowException(e.getMessage(), e);
+        }
+    }
 	
 	
     @Override
     public ITuple getNextTuple() throws DataFlowException {
 		try {
-            ITuple sourceTuple = sourceOperator.getNextTuple();
-            if(sourceTuple == null){
-                return null;
-            }  
-            
-            this.spanList = computeMatches(sourceTuple);
-            
-            if (spanList != null && spanList.size() != 0) { // a list of matches found
-            	List<IField> fields = sourceTuple.getFields();
-            	return constructSpanTuple(fields, this.spanList);
-            } else { // no match found
-            	return getNextTuple();
-            }
+			if (limit == 0 || cursor >= offset + limit - 1){
+				return null;
+			}
+			ITuple sourceTuple;
+			ITuple resultTuple = null;
+			while ((sourceTuple = inputOperator.getNextTuple()) != null) {
+			    if (! inputSchema.containsField(SchemaConstants.SPAN_LIST)) {
+			        sourceTuple = Utils.getSpanTuple(sourceTuple.getFields(), new ArrayList<Span>(), outputSchema);
+			    }	    
+	            resultTuple = computeMatchingResult(sourceTuple);
+	            
+	            if (resultTuple != null) {
+		            cursor++;
+	            }
+	            if (resultTuple!= null && cursor >= offset){
+	            	break;
+	            }
+			}
+			return resultTuple;
         } catch (Exception e) {
             e.printStackTrace();
             throw new DataFlowException(e.getMessage(), e);
         }        
     }
     
-    
-    private ITuple constructSpanTuple(List<IField> fields, List<Span> spans) {
-    	List<IField> fieldListDuplicate = new ArrayList<>(fields);
-    	IField spanListField = new ListField<Span>(spans);
-    	fieldListDuplicate.add(spanListField);
-    	IField[]  fieldsDuplicate = fieldListDuplicate.toArray(new IField[fieldListDuplicate.size()]);
-    	return new DataTuple(spanSchema, fieldsDuplicate);
-    }
-	
-    
+
 	/**
 	 * This function returns a list of spans in the given tuple that match the
 	 * regex For example, given tuple ("george watson", "graduate student", 23,
@@ -157,50 +145,68 @@ public class RegexMatcher implements IOperator {
 	 *            document in which search is performed
 	 * @return a list of spans describing the occurrence of a matching sequence
 	 *         in the document
+	 * @throws DataFlowException 
 	 */
-	public List<Span> computeMatches(ITuple tuple) {
-		List<Span> spanList = new ArrayList<>();
-		if (tuple == null) {
-			return spanList; // empty array
+	public ITuple computeMatchingResult(ITuple sourceTuple) throws DataFlowException {
+	    if (sourceTuple == null) {
+	        return null;
+	    }
+	    
+        List<Span> matchingResults = new ArrayList<>();
+        
+        for (Attribute attribute : attributeList) {
+            String fieldName = attribute.getFieldName();
+            FieldType fieldType = attribute.getFieldType();
+            String fieldValue = sourceTuple.getField(fieldName).getValue().toString();
+            
+            // types other than TEXT and STRING: throw Exception for now
+            if (fieldType != FieldType.STRING && fieldType != FieldType.TEXT) {
+                throw new DataFlowException("KeywordMatcher: Fields other than STRING and TEXT are not supported yet");
+            }
+                        
+            switch (regexEngine) {
+            case JavaRegex:
+                matchingResults.addAll(javaRegexMatch(fieldValue, fieldName));
+                break;
+            case RE2J:
+                matchingResults.addAll(re2jRegexMatch(fieldValue, fieldName));
+                break;
+            }     
+        }
+
+		if (matchingResults.isEmpty()) {
+			return null;
 		}
-		for (String fieldName : fieldNameList) {
-			IField field = tuple.getField(fieldName);
-			String fieldValue = field.getValue().toString();
-			if (fieldValue == null) {
-				return spanList;
-			} else {
-				switch (regexEngine) {
-				case JavaRegex:
-					javaRegexMatch(fieldValue, fieldName, spanList);
-					break;
-				case RE2J:
-					re2jRegexMatch(fieldValue, fieldName, spanList);
-					break;
-				}
-			}
-		}
-		return spanList;
+			
+        List<Span> spanList = (List<Span>) sourceTuple.getField(SchemaConstants.SPAN_LIST).getValue();
+        spanList.addAll(matchingResults);
+        
+		return sourceTuple;
 	}
 	
 	
-	private void javaRegexMatch(String fieldValue, String fieldName, List<Span> spanList) {
+	private List<Span> javaRegexMatch(String fieldValue, String fieldName) {
+	    List<Span> matchingResults = new ArrayList<>();
 		java.util.regex.Matcher javaMatcher = this.javaPattern.matcher(fieldValue);
 		while (javaMatcher.find()) {
 			int start = javaMatcher.start();
 			int end = javaMatcher.end();
-			spanList.add(new Span(fieldName, start, end, 
+			matchingResults.add(new Span(fieldName, start, end, 
 					this.regexPredicate.getRegex(), fieldValue.substring(start, end)));
 		}
+		return matchingResults;
 	}
 	
-	private void re2jRegexMatch(String fieldValue, String fieldName, List<Span> spanList) {
+	private List<Span> re2jRegexMatch(String fieldValue, String fieldName) {
+        List<Span> matchingResults = new ArrayList<>();	    
 		com.google.re2j.Matcher re2jMatcher = this.re2jPattern.matcher(fieldValue);
 		while (re2jMatcher.find()) {
 			int start = re2jMatcher.start();
 			int end = re2jMatcher.end();
-			spanList.add(new Span(fieldName, start, end, 
+			matchingResults.add(new Span(fieldName, start, end, 
 					this.regexPredicate.getRegex(), fieldValue.substring(start, end)));
 		}
+		return matchingResults;
 	}
 	
 	/**
@@ -240,37 +246,50 @@ public class RegexMatcher implements IOperator {
 		return this.regexEngine.toString();
 	}
     
-    
-    @Override
-    public void open() throws DataFlowException {
-        try {
-            sourceOperator.open();
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new DataFlowException(e.getMessage(), e);
-        }
-    }
 
     @Override
     public void close() throws DataFlowException {
         try {
-            sourceOperator.close();
+            if (inputOperator != null) {
+                inputOperator.close();   
+            }
         } catch (Exception e) {
             e.printStackTrace();
             throw new DataFlowException(e.getMessage(), e);
         }
     }
     
-
-    public Schema getSpanSchema() {
-    	return spanSchema;
-    }
-    
-    public String getLueneQueryString() {
-    	return this.luceneQueryStr;
-    }
     
     public String getRegex() {
     	return this.regex;
+    }
+    
+    public IOperator getInputOperator() {
+		return inputOperator;
+	}
+
+	public void setInputOperator(ISourceOperator inputOperator) {
+		this.inputOperator = inputOperator;
+	}
+
+    @Override
+    public Schema getOutputSchema() {
+        return outputSchema;
+    }
+    
+    public void setLimit(int limit){
+        this.limit = limit;
+    }
+    
+    public int getLimit(){
+        return this.limit;
+    }
+    
+    public void setOffset(int offset){
+        this.offset = offset;
+    }
+    
+    public int getOffset(){
+        return this.offset;
     }
 }

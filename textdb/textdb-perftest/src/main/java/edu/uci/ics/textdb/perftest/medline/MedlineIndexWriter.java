@@ -81,9 +81,10 @@ public class MedlineIndexWriter {
 	 * @throws Exception
 	 */	
 	public static Plan getMedlineIndexPlan(String filePath, IDataStore dataStore, Analyzer luceneAnalyzer) throws Exception {
-		ISourceOperator fileSourceOperator  = new FileSourceOperator(filePath, (s -> recordToTuple(s)));
-		ISink medlineIndexSink = new IndexSink(fileSourceOperator, dataStore.getDataDirectory(), dataStore.getSchema(), luceneAnalyzer);
-		
+		IndexSink medlineIndexSink = new IndexSink(dataStore.getDataDirectory(), dataStore.getSchema(), luceneAnalyzer);		
+		ISourceOperator fileSourceOperator  = new FileSourceOperator(filePath, (s -> recordToTuple(s)), dataStore.getSchema());
+		medlineIndexSink.setInputOperator(fileSourceOperator);
+	
 		Plan writeIndexPlan = new Plan(medlineIndexSink);
 
 		return writeIndexPlan;
