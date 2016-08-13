@@ -32,7 +32,7 @@ public class TweetsDictMatcher {
     	IDictionary dictionary = new Dictionary(queries);
     	IDataStore dataStore = new DataStore(indexPath, TweetsConstants.SCHEMA_TWEETS);
     	IPredicate dictionaryPredicate = new DictionaryPredicate(dictionary, attributes, luceneAnalyzer, srcOpType);
-    	dictionaryMatcher = new DictionaryMatcher(dictionaryPredicate);
+    	dictionaryMatcher = new DictionaryMatcher((DictionaryPredicate) dictionaryPredicate);
     	dictionaryMatcher.open();
     }
     
